@@ -64,6 +64,7 @@ import urllib.parse
 import re
 import logging
 import os
+import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.common.keys import Keys
@@ -79,7 +80,7 @@ class Domain:
 
 
 class Scraper(scrape_lib.Scraper):
-    def __init__(self, credentials, output_directory, amazon_domain=Domain.COM, regular=True, digital=None, **kwargs):
+    def __init__(self, credentials, output_directory, amazon_domain=Domain.COM, regular=True, digital=None, scope="", **kwargs):
         super().__init__(**kwargs)
         default_digital = True if amazon_domain == Domain.COM else False
         self.credentials = credentials
@@ -88,6 +89,8 @@ class Scraper(scrape_lib.Scraper):
         self.amazon_domain = amazon_domain
         self.regular = regular
         self.digital = digital if digital is not None else default_digital
+        self.scope = scope
+        self.known_order_path = os.path.join(self.output_directory, "known_orders.txt")
 
     def check_url(self, url):
         netloc_re = r'^([^\.@]+\.)*amazon.' + self.amazon_domain + '$'
@@ -120,7 +123,7 @@ class Scraper(scrape_lib.Scraper):
         (username, ), = self.wait_and_return(
             lambda: self.find_visible_elements(By.XPATH, '//input[@type="email"]')
         )
-        username.send_keys(self.credentials['username'])
+        username.send_keys(self.credentials['username'] + "\n")
 
         logger.info('Looking for password link')
         (password, ), = self.wait_and_return(
@@ -142,89 +145,99 @@ class Scraper(scrape_lib.Scraper):
     def get_invoice_path(self, order_id):
         return os.path.join(self.output_directory, order_id + '.html')
 
+    def get_invoice_url(self,order_id):
+        if order_id.startswith('D'):
+            return 'https://www.amazon.%s/gp/digital/your-account/order-summary.html?ie=UTF8&orderID=%s' % (
+                            self.amazon_domain, order_id)
+        return 'https://www.amazon.%s/gp/css/summary/print.html?ie=UTF8&orderID=%s' % (
+                            self.amazon_domain, order_id)
+
     def get_orders(self, regular=True, digital=True):
-        invoice_hrefs = []
-        order_ids_seen = set()
+        order_ids = set()
 
         def get_invoice_urls():
             initial_iteration = True
-            while True:
+            previous_url = ""
+            with open(self.known_order_path, "a+") as known_order_file:
+                page = 1
+                while True:
+                    # time for the order page to fully load
+                    logger.info("On page %s", page)
+                    time.sleep(2)
+                    def invoice_finder():
+                        return self.driver.find_elements(By.XPATH, '//a[contains(@href, "orderID=")]')
 
-                def invoice_finder():
-                    return self.driver.find_elements(By.XPATH, '//a[contains(@href, "orderID=")]')
+                    if initial_iteration:
+                        invoices = invoice_finder()
+                    else:
+                        invoices, = self.wait_and_return(invoice_finder)
+                    initial_iteration = False
 
-                if initial_iteration:
-                    invoices = invoice_finder()
-                else:
-                    invoices, = self.wait_and_return(invoice_finder)
-                initial_iteration = False
+                    for invoice_link in invoices:
+                        href = invoice_link.get_attribute('href')
+                        m = re.match('.*[&?]orderID=((?:D)?[0-9\\-]+)(?:&.*)?$', href)
+                        if m is None:
+                            raise RuntimeError(
+                                'Failed to parse order ID from href %r' % (href, ))
+                        order_id = m[1]
+                        if order_id in order_ids:
+                            continue
+                        invoice_path = self.get_invoice_path(order_id)
+                        if order_id in order_ids:
+                            logger.info('Skipping already-seen order id: %r',
+                                        order_id)
+                            continue
+                        if os.path.exists(invoice_path):
+                            logger.info('Skipping already-downloaded invoice: %r',
+                                        order_id)
+                            continue
+                        known_order_file.write(order_id + "\n")
+                        print_url = 'https://www.amazon.%s/gp/css/summary/print.html?ie=UTF8&orderID=%s' % (
+                            self.amazon_domain, order_id)
+                        order_ids.add(order_id)
 
-                order_ids = set()
-                for invoice_link in invoices:
-                    href = invoice_link.get_attribute('href')
-                    m = re.match('.*[&?]orderID=((?:D)?[0-9\\-]+)(?:&.*)?$', href)
-                    if m is None:
-                        raise RuntimeError(
-                            'Failed to parse order ID from href %r' % (href, ))
-                    order_id = m[1]
-                    if order_id in order_ids:
-                        continue
-                    order_ids.add(order_id)
-                    invoice_path = self.get_invoice_path(order_id)
-                    if order_id in order_ids_seen:
-                        logger.info('Skipping already-seen order id: %r',
-                                    order_id)
-                        continue
-                    if os.path.exists(invoice_path):
-                        logger.info('Skipping already-downloaded invoice: %r',
-                                    order_id)
-                        continue
-                    print_url = 'https://www.amazon.%s/gp/css/summary/print.html?ie=UTF8&orderID=%s' % (
-                        self.amazon_domain, order_id)
-                    invoice_hrefs.append((print_url, order_id))
-                    order_ids_seen.add(order_id)
-
-                # Find next link
-                next_links = self.find_elements_by_descendant_text_match(
-                    '. = "Next"', 'a', only_displayed=True)
-                if len(next_links) == 0:
-                    logger.info('Found no more pages')
-                    break
-                if len(next_links) != 1:
-                    raise RuntimeError('More than one next link found')
-                with self.wait_for_page_load():
+                    # Find next link
+                    time.sleep(1)
+                    next_links = self.find_elements_by_descendant_text_match(
+                        '. = "Next"', 'a', only_displayed=True)
+                    if len(next_links) == 0 or self.driver.current_url == previous_url:
+                        logger.info('Found no more pages')
+                        break
+                    previous_url = self.driver.current_url
+                    page += 1
                     self.click(next_links[0])
 
         def retrieve_all_order_groups():
-            order_select_index = 0
-
-            while True:
+            (order_filter,), = self.wait_and_return(
+                lambda: self.find_visible_elements(By.XPATH, '//select[@name="orderFilter"]')
+            )
+            order_select = Select(order_filter)
+            num_options = len(order_select.options)
+            for order_select_index in range(num_options):
+                # need a fresh copy of the select since we've changed page
                 (order_filter,), = self.wait_and_return(
-                    lambda: self.find_visible_elements(By.XPATH, '//select[@name="orderFilter"]')
+                lambda: self.find_visible_elements(By.XPATH, '//select[@name="orderFilter"]')
                 )
                 order_select = Select(order_filter)
-                num_options = len(order_select.options)
-                if order_select_index >= num_options:
-                    break
                 option_text = order_select.options[
                     order_select_index].text.strip()
-                if option_text != 'Archived Orders':
-                    logger.info('Retrieving order group: %r', option_text)
-                    with self.wait_for_page_load():
-                        order_select.select_by_index(order_select_index)
-                    get_invoice_urls()
-
-                order_select_index += 1
-                if order_select_index >= num_options:
-                    break
+                if self.scope != "" and self.scope != option_text:
+                    continue
+                if option_text == 'Archived Orders':
+                    continue
+                logger.info('Retrieving order group: %r', option_text)
+                with self.wait_for_page_load():
+                    order_select.select_by_index(order_select_index)
+                get_invoice_urls()
 
         if regular:
-            orders_text = "Your Orders" if self.amazon_domain == Domain.CO_UK else "Orders"
+            orders_text = "Your Orders"
             # on co.uk, orders link is hidden behind the menu, hence not directly clickable
-            (orders_link,), = self.wait_and_return(
-                lambda: self.find_elements_by_descendant_text_match('. = "{}"'.format(orders_text), 'a', only_displayed=False)
+            (orders_link,) = self.wait_and_return(
+                lambda: self.find_elements_by_descendant_text_match('contains(., "{}")'.format(orders_text), 'a', only_displayed=False)
             )
-            link = orders_link.get_attribute('href')
+
+            link = orders_link[0].get_attribute('href')
             scrape_lib.retry(lambda: self.driver.get(link), retry_delay=2)
 
             retrieve_all_order_groups()
@@ -237,11 +250,15 @@ class Scraper(scrape_lib.Scraper):
                              retry_delay=2)
             retrieve_all_order_groups()
 
-        self.retrieve_invoices(invoice_hrefs)
+        self.retrieve_invoices(order_ids)
 
-    def retrieve_invoices(self, invoice_hrefs):
-        for href, order_id in invoice_hrefs:
+    def retrieve_invoices(self, order_ids):
+        for order_id in order_ids:
+            order_id = order_id.strip()
             invoice_path = self.get_invoice_path(order_id)
+            if os.path.exists(invoice_path): continue
+            href = self.get_invoice_url(order_id)
+
 
             logger.info('Downloading invoice for order %r', order_id)
             with self.wait_for_page_load():
@@ -251,16 +268,19 @@ class Scraper(scrape_lib.Scraper):
             # Wait until it is all generated.
             def get_source():
                 source = self.driver.page_source
-                if 'Grand Total:' in source:
+                if 'Grand Total:' in source or 'Pre-order' in source:
                     return source
                 return None
 
+            # digital orders need more time to load
+            if order_id[0] == 'D': time.sleep(5)
             page_source, = self.wait_and_return(get_source)
             if order_id not in page_source:
+                import code; code.interact(local=locals())
                 raise ValueError('Failed to retrieve information for order %r'
                                  % (order_id, ))
             with atomic_write(
-                    invoice_path, mode='w', encoding='utf-8',
+                    invoice_path, mode='w+', encoding='utf-8',
                     newline='\n') as f:
                 # Write with Unicode Byte Order Mark to ensure content will be properly interpreted as UTF-8
                 f.write('\ufeff' + page_source)
@@ -270,6 +290,11 @@ class Scraper(scrape_lib.Scraper):
         self.login()
         if not os.path.exists(self.output_directory):
             os.makedirs(self.output_directory)
+
+        # first retrieve any known order IDs that don't exist on disk already.
+        open(self.known_order_path, "a+").close()
+        with open(self.known_order_path, "r") as known_order_file:
+            self.retrieve_invoices(known_order_file)
         self.get_orders(regular=self.regular, digital=self.digital)
 
 
