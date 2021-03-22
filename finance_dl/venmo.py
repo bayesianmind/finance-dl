@@ -80,6 +80,7 @@ import dateutil.parser
 import datetime
 import logging
 import os
+import time
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.support.ui import Select
@@ -212,7 +213,7 @@ class Scraper(scrape_lib.Scraper):
         csv_reader = csv.DictReader(
             io.StringIO(csv_result.decode(), newline=''))
         field_names = csv_reader.fieldnames
-        rows = list(csv_reader)
+        rows = [row for row in csv_reader if row['Datetime'].strip()]
 
         # Make sure rows are valid transactions with a date
         good_rows = []
@@ -286,6 +287,9 @@ class Scraper(scrape_lib.Scraper):
                            start_date + datetime.timedelta(days=89))
             self.fetch_statement(start_date, end_date)
             start_date = end_date + datetime.timedelta(days=1)
+
+            logger.debug('Venmo hack: waiting 5 seconds between requests')
+            time.sleep(5)
 
     def run(self):
         self.login()

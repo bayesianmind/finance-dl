@@ -2,7 +2,8 @@ Python package for scraping personal financial data from financial
 institutions.
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
-[![Build Status](https://travis-ci.com/jbms/finance-dl.svg?branch=master)](https://travis-ci.com/jbms/finance-dl)
+[![PyPI](https://img.shields.io/pypi/v/finance-dl)](https://pypi.org/project/finance-dl)
+[![Build](https://github.com/jbms/finance-dl/workflows/Build/badge.svg)](https://github.com/jbms/finance-dl/actions?query=workflow%3ABuild)
 
 This package may be useful on its own, but is specifically designed to be
 used with
@@ -48,6 +49,7 @@ Supported data sources
   Google employee payroll statements in PDF format from Ultipro.
 - [finance_dl.usbank](finance_dl/usbank.py): downloads data from US Bank credit cards in OFX format.
 - [finance_dl.radiusbank](finance_dl/radiusbank.py): downloads data from Radius Bank in QFX format.
+- [finance_dl.schwab](finance_dl/schwab.py): downloads data from Schwab Brokerage accounts in CSV format.
 
 Setup
 ==
