@@ -344,7 +344,7 @@ class SchwabScraper(scrape_lib.Scraper):
         return
 
     def get_account_dirs(self, account: Account) -> Tuple[str, str]:
-        acct_dir = os.path.join(self.output_directory, account.number)
+        acct_dir = os.path.join(self.output_directory, f"{account.label}_{account.number}")
         pos_dir = os.path.join(acct_dir, "positions")
         if not os.path.exists(pos_dir):
             os.makedirs(pos_dir)
